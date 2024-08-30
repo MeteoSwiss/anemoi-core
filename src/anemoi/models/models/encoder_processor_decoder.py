@@ -251,3 +251,142 @@ class AnemoiModelEncProcDec(nn.Module):
         # residual connection (just for the prognostic variables)
         x_out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
         return x_out
+
+
+class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
+    """Message passing graph neural network with double encoder, one for model levels and another for pressur levels"""
+
+    def __init__(
+        self,
+        *,
+        config: DotDict,
+        data_indices: dict,
+        graph_data: HeteroData,
+    ) -> None:
+        """Initializes the graph neural network.
+
+        Parameters
+        ----------
+        config : DotDict
+            Job configuration
+        data_indices : dict
+            Data indices
+        graph_data : HeteroData
+            Graph definition
+        """
+        super().__init__(config, data_indices, graph_data)
+
+        # Model level encoder
+        self.ml_encoder = nn.Sequential(nn.Linear(config.model.ml_features, config.model.pl_features), act_func = getattr(nn, 'SiLU'))
+
+    def _create_trainable_attributes(self) -> None:
+        """Create all trainable attributes."""
+        self.trainable_data = TrainableTensor(trainable_size=self.trainable_data_size, tensor_size=self._data_grid_size)
+        self.trainable_hidden = TrainableTensor(
+            trainable_size=self.trainable_hidden_size, tensor_size=self._hidden_grid_size
+        )
+
+    def _run_mapper(
+        self,
+        mapper: nn.Module,
+        data: tuple[Tensor],
+        batch_size: int,
+        shard_shapes: tuple[tuple[int, int], tuple[int, int]],
+        model_comm_group: Optional[ProcessGroup] = None,
+        use_reentrant: bool = False,
+    ) -> Tensor:
+        """Run mapper with activation checkpoint.
+
+        Parameters
+        ----------
+        mapper : nn.Module
+            Which processor to use
+        data : tuple[Tensor]
+            tuple of data to pass in
+        batch_size: int,
+            Batch size
+        shard_shapes : tuple[tuple[int, int], tuple[int, int]]
+            Shard shapes for the data
+        model_comm_group : ProcessGroup
+            model communication group, specifies which GPUs work together
+            in one model instance
+        use_reentrant : bool, optional
+            Use reentrant, by default False
+
+        Returns
+        -------
+        Tensor
+            Mapped data
+        """
+        return checkpoint(
+            mapper,
+            data,
+            batch_size=batch_size,
+            shard_shapes=shard_shapes,
+            model_comm_group=model_comm_group,
+            use_reentrant=use_reentrant,
+        )
+
+    def forward(self, x: Tensor, model_comm_group: Optional[ProcessGroup] = None) -> Tensor:
+        batch_size = x.shape[0]
+        ensemble_size = x.shape[2]
+
+        # add data positional info (lat/lon)
+        x_data_latent = torch.cat(
+            (
+                einops.rearrange(x, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"),
+                self.trainable_data(self.latlons_data, batch_size=batch_size),
+            ),
+            dim=-1,  # feature dimension
+        )
+
+        x_hidden_latent = self.trainable_hidden(self.latlons_hidden, batch_size=batch_size)
+
+        # get shard shapes
+        shard_shapes_data = get_shape_shards(x_data_latent, 0, model_comm_group)
+        shard_shapes_hidden = get_shape_shards(x_hidden_latent, 0, model_comm_group)
+
+        # Run encoder
+        x_data_latent, x_latent = self._run_mapper(
+            self.encoder,
+            (x_data_latent, x_hidden_latent),
+            batch_size=batch_size,
+            shard_shapes=(shard_shapes_data, shard_shapes_hidden),
+            model_comm_group=model_comm_group,
+        )
+
+        x_latent_proc = self.processor(
+            x_latent,
+            batch_size=batch_size,
+            shard_shapes=shard_shapes_hidden,
+            model_comm_group=model_comm_group,
+        )
+
+        # add skip connection (hidden -> hidden)
+        x_latent_proc = x_latent_proc + x_latent
+
+        # Run decoder
+        x_out = self._run_mapper(
+            self.decoder,
+            (x_latent_proc, x_data_latent),
+            batch_size=batch_size,
+            shard_shapes=(shard_shapes_hidden, shard_shapes_data),
+            model_comm_group=model_comm_group,
+        )
+
+        x_out = (
+            einops.rearrange(
+                x_out,
+                "(batch ensemble grid) vars -> batch ensemble grid vars",
+                batch=batch_size,
+                ensemble=ensemble_size,
+            )
+            .to(dtype=x.dtype)
+            .clone()
+        )
+
+        # residual connection (just for the prognostic variables)
+        x_out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
+        return x_out
+
+
