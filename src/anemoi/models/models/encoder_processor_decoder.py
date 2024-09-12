@@ -35,6 +35,7 @@ class AnemoiModelEncProcDec(nn.Module):
         config: DotDict,
         data_indices: dict,
         graph_data: HeteroData,
+        lam_index: int = None 
     ) -> None:
         """Initializes the graph neural network.
 
@@ -253,7 +254,7 @@ class AnemoiModelEncProcDec(nn.Module):
         return x_out
 
 
-class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
+class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
     """Message passing graph neural network with double encoder, one for model levels and another for pressur levels"""
 
     def __init__(
@@ -262,6 +263,8 @@ class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
         config: DotDict,
         data_indices: dict,
         graph_data: HeteroData,
+        lam_index: int,
+        global_shape: int,
     ) -> None:
         """Initializes the graph neural network.
 
@@ -273,11 +276,21 @@ class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
             Data indices
         graph_data : HeteroData
             Graph definition
+        lam_index : int
+            Index that separates lam data and global data in the input 
         """
         super().__init__(config, data_indices, graph_data)
 
         # Model level encoder
-        self.ml_encoder = nn.Sequential(nn.Linear(config.model.ml_features, config.model.pl_features), act_func = getattr(nn, 'SiLU'))
+        self.lam_index = lam_index
+        self.global_shape = global_shape
+
+        # Define first encoder
+        self.ml_encoder = nn.Sequential(nn.Linear(config.model.ml_features, config.model.pl_features), act_func = getattr(nn, config.model.activation))
+
+        #Define decoder
+        self.ml_decoder = nn.Sequential(nn.Linear(config.model.pl_features, config.model.ml_features), act_func = getattr(nn, config.model.activation))
+
 
     def _calculate_shapes_and_indices(self, data_indices: dict) -> None:
         self.num_input_channels = len(data_indices.model.input)
@@ -369,6 +382,22 @@ class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
     def forward(self, x: Tensor, model_comm_group: Optional[ProcessGroup] = None) -> Tensor:
         batch_size = x.shape[0]
         ensemble_size = x.shape[2]
+        grid_size = x.shape[3]
+        vars_size = x.shape[4]
+
+        # Map ml to pl
+        lam_data = x[:,:,:,:self.lam_index, :]
+        lam_data = einops.rearrange(lam_data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
+        mapped_lam_data = self.ml_encoder(lam_data)
+        mapped_lam_data = einops.rearrange(mapped_lam_data, 
+                                           " batch (time ensemble grid) vars -> batch time ensemble grid vars", 
+                                           batch=batch_size,
+                                           ensemble=ensemble_size
+                                           )
+        # Remove padding on original data
+        x = x[:,:,:,:,:self.global_shape]
+        # Insert mapped features
+        x[:,:,:,:self.lam_index, :] = mapped_lam_data
 
         # add data positional info (lat/lon)
         x_data_latent = torch.cat(
@@ -424,9 +453,24 @@ class AnemoiModelDoubleEncProcDec(AnemoiModelEncProcDec):
             .clone()
         )
 
+        # Map pl back to ml
+        lam_data = x_out[:,:,:self.lam_index, :]
+        lam_data = einops.rearrange(lam_data, "batch ensemble grid vars -> batch (ensemble grid) vars")
+        mapped_lam_data = self.ml_decoder(lam_data)
+        mapped_lam_data = einops.rearrange(mapped_lam_data, 
+                                           "batch (ensemble grid) vars -> batch ensemble grid vars", 
+                                           batch=batch_size,
+                                           ensemble=ensemble_size
+                                           )
+        # Add padding on output global data
+        padded_out = torch.zeros([batch_size, ensemble_size, grid_size, vars_size], torch.float32).to(x_out.device)
+        padded_out[:,:,:,:,:self.global_shape] = x_out
+        # Insert mapped features
+        padded_out[:,:,:,:self.lam_index, :] = mapped_lam_data
+
         # residual connection (just for the prognostic variables)
-        x_out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
-        return x_out
+        padded_out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
+        return padded_out
 
 
 

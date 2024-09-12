@@ -49,8 +49,9 @@ class AnemoiModelInterface(torch.nn.Module):
     """
 
     def __init__(
-        self, *, config: DotDict, graph_data: HeteroData, statistics: dict, data_indices: dict, metadata: dict
-    ) -> None:
+            self, *, config: DotDict, graph_data: HeteroData, statistics: dict, data_indices: dict, metadata: dict, lam_index: int=None, global_shape:int=None
+            ) -> None:
+        
         super().__init__()
         self.config = config
         self.id = str(uuid.uuid4())
@@ -59,6 +60,8 @@ class AnemoiModelInterface(torch.nn.Module):
         self.statistics = statistics
         self.metadata = metadata
         self.data_indices = data_indices
+        self.lam_index=lam_index,
+        self.global_shape=global_shape,
         self._build_model()
 
     def _build_model(self) -> None:
@@ -73,12 +76,38 @@ class AnemoiModelInterface(torch.nn.Module):
         self.pre_processors = Processors(processors)
         self.post_processors = Processors(processors, inverse=True)
 
-        # Instantiate the model (Can be generalised to other models in the future, here we use AnemoiModelEncProcDec)
-        self.model = AnemoiModelEncProcDec(
-            config=self.config, data_indices=self.data_indices, graph_data=self.graph_data
-        )
+        # # TODO: Make the instantiate work
+        # self.model = instantiate(
+        #     self.config.model,
+        #     model_config=self.config,
+        #     data_indices=self.data_indices, 
+        #     graph_data=self.graph_data,
+        #     _recursive_=False
+        # )
 
-        # Use the forward method of the model directly
+        if self.config.model._target_ == 'anemoi.models.models.AnemoiModelCascadedEncProcDec':
+            from anemoi.models.models.encoder_processor_decoder import AnemoiModelCascadedEncProcDec
+
+            self.model = AnemoiModelCascadedEncProcDec(
+                model_config=self.config,
+                data_indices=self.data_indices, 
+                graph_data=self.graph_data,
+                lam_index=self.lam_index,
+                global_shape=self.global_shape,
+            )
+        
+        elif self.config.model._target_ == 'anemoi.models.models.AnemoiModelEncProcDec':
+            from anemoi.models.models.encoder_processor_decoder import AnemoiModelEncProcDec
+
+            self.model = AnemoiModelEncProcDec(
+                model_config=self.config,
+                data_indices=self.data_indices, 
+                graph_data=self.graph_data
+            )
+        
+        else:
+            raise(NotImplementedError, f'This interface has not been implemented: {self.config.model._target_}')
+
         self.forward = self.model.forward
 
     def predict_step(self, batch: torch.Tensor) -> torch.Tensor:
