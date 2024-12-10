@@ -1,11 +1,11 @@
-# (C) Copyright 2024 ECMWF.
+# (C) Copyright 2024 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
-#
 
 import uuid
 
@@ -14,7 +14,6 @@ from anemoi.utils.config import DotDict
 from hydra.utils import instantiate
 from torch_geometric.data import HeteroData
 
-from anemoi.models.models.encoder_processor_decoder import AnemoiModelEncProcDec
 from anemoi.models.preprocessing import Processors
 
 
@@ -68,7 +67,7 @@ class AnemoiModelInterface(torch.nn.Module):
         """Builds the model and pre- and post-processors."""
         # Instantiate processors
         processors = [
-            [name, instantiate(processor, statistics=self.statistics, data_indices=self.data_indices)]
+            [name, instantiate(processor, data_indices=self.data_indices, statistics=self.statistics)]
             for name, processor in self.config.data.processors.items()
         ]
 
@@ -76,37 +75,14 @@ class AnemoiModelInterface(torch.nn.Module):
         self.pre_processors = Processors(processors)
         self.post_processors = Processors(processors, inverse=True)
 
-        # # TODO: Make the instantiate work
-        # self.model = instantiate(
-        #     self.config.model,
-        #     model_config=self.config,
-        #     data_indices=self.data_indices, 
-        #     graph_data=self.graph_data,
-        #     _recursive_=False
-        # )
-
-        if self.config.model._target_ == 'anemoi.models.models.AnemoiModelCascadedEncProcDec':
-            from anemoi.models.models.encoder_processor_decoder import AnemoiModelCascadedEncProcDec
-
-            self.model = AnemoiModelCascadedEncProcDec(
-                model_config=self.config,
-                data_indices=self.data_indices, 
-                graph_data=self.graph_data,
-                lam_index=self.lam_index,
-                global_shape=self.global_shape,
-            )
-        
-        elif self.config.model._target_ == 'anemoi.models.models.AnemoiModelEncProcDec':
-            from anemoi.models.models.encoder_processor_decoder import AnemoiModelEncProcDec
-
-            self.model = AnemoiModelEncProcDec(
-                model_config=self.config,
-                data_indices=self.data_indices, 
-                graph_data=self.graph_data
-            )
-        
-        else:
-            raise(NotImplementedError, f'This interface has not been implemented: {self.config.model._target_}')
+        # Instantiate the model
+        self.model = instantiate(
+            self.config.model.model,
+            model_config=self.config,
+            data_indices=self.data_indices,
+            graph_data=self.graph_data,
+            _recursive_=False,  # Disables recursive instantiation by Hydra
+        )
 
         self.forward = self.model.forward
 

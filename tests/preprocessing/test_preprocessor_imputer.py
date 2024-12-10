@@ -1,11 +1,12 @@
-# (C) Copyright 2024 ECMWF.
+# (C) Copyright 2024 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
-#
+
 
 import numpy as np
 import pytest
@@ -26,6 +27,7 @@ def non_default_input_imputer():
                 "imputer": {"default": "none", "mean": ["y"], "maximum": ["x"], "none": ["z"], "minimum": ["q"]},
                 "forcing": ["z", "q"],
                 "diagnostic": ["other"],
+                "remapped": {},
             },
         },
     )
@@ -37,7 +39,7 @@ def non_default_input_imputer():
     }
     name_to_index = {"x": 0, "y": 1, "z": 2, "q": 3, "other": 4}
     data_indices = IndexCollection(config=config, name_to_index=name_to_index)
-    return InputImputer(config=config.data.imputer, statistics=statistics, data_indices=data_indices)
+    return InputImputer(config=config.data.imputer, data_indices=data_indices, statistics=statistics)
 
 
 @pytest.fixture()
@@ -49,6 +51,7 @@ def default_input_imputer():
                 "imputer": {"default": "minimum"},
                 "forcing": ["z", "q"],
                 "diagnostic": ["other"],
+                "remapped": [],
             },
         },
     )
@@ -86,6 +89,7 @@ def default_constant_imputer():
                 "imputer": {"default": "none", 0: ["x"], 3.0: ["y"], 22.7: ["z"], 10: ["q"]},
                 "forcing": ["z", "q"],
                 "diagnostic": ["other"],
+                "remapped": [],
             },
         },
     )
@@ -103,6 +107,7 @@ def non_default_constant_imputer():
                 "imputer": {"default": 22.7},
                 "forcing": ["z", "q"],
                 "diagnostic": ["other"],
+                "remapped": [],
             },
         },
     )
@@ -290,6 +295,26 @@ def test_mask_saving(imputer_fixture, data_fixture, request):
     expected_mask = torch.isnan(x)
     imputer.transform(x)
     assert torch.equal(imputer.nan_locations, expected_mask), "Mask not saved correctly after first run."
+
+
+@pytest.mark.parametrize(
+    ("imputer_fixture", "data_fixture"),
+    [
+        ("default_constant_imputer", "default_constant_data"),
+        ("non_default_constant_imputer", "non_default_constant_data"),
+        ("default_input_imputer", "default_input_data"),
+        ("non_default_input_imputer", "non_default_input_data"),
+    ],
+)
+def test_loss_nan_mask(imputer_fixture, data_fixture, request):
+    """Check that the imputer correctly transforms a tensor with NaNs."""
+    x, _ = request.getfixturevalue(data_fixture)
+    expected = torch.tensor([[1.0, 1.0, 1.0], [1.0, 0.0, 1.0]])  # only prognostic and diagnostic variables
+    imputer = request.getfixturevalue(imputer_fixture)
+    imputer.transform(x)
+    assert torch.allclose(
+        imputer.loss_mask_training, expected
+    ), "Transform does not calculate NaN-mask for loss function scaling correctly."
 
 
 @pytest.mark.parametrize(

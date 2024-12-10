@@ -1,11 +1,12 @@
-# (C) Copyright 2024 ECMWF.
+# (C) Copyright 2024 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
-#
+
 
 from abc import ABC
 from typing import Optional
@@ -18,7 +19,7 @@ from torch.utils.checkpoint import checkpoint
 from torch_geometric.data import HeteroData
 
 from anemoi.models.distributed.graph import shard_tensor
-from anemoi.models.distributed.khop_edges import sort_edges_1hop
+from anemoi.models.distributed.khop_edges import sort_edges_1hop_sharding
 from anemoi.models.distributed.shapes import change_channels_in_shape
 from anemoi.models.distributed.shapes import get_shape_shards
 from anemoi.models.layers.chunk import GNNProcessorChunk
@@ -95,6 +96,7 @@ class TransformerProcessor(BaseProcessor):
         cpu_offload: bool = False,
         num_heads: int = 16,
         mlp_hidden_ratio: int = 4,
+        dropout_p: float = 0.1,
         **kwargs,
     ) -> None:
         """Initialize TransformerProcessor.
@@ -113,6 +115,8 @@ class TransformerProcessor(BaseProcessor):
             ratio of mlp hidden dimension to embedding dimension, default 4
         activation : str, optional
             Activation function, by default "GELU"
+        dropout_p: float, optional
+            Dropout probability used for multi-head self attention, default 0.0
         """
         super().__init__(
             num_channels=num_channels,
@@ -133,6 +137,7 @@ class TransformerProcessor(BaseProcessor):
             num_layers=self.chunk_size,
             window_size=window_size,
             activation=activation,
+            dropout_p=dropout_p,
         )
 
         self.offload_layers(cpu_offload)
@@ -231,7 +236,7 @@ class GNNProcessor(GraphEdgeMixin, BaseProcessor):
         edge_attr = self.trainable(self.edge_attr, batch_size)
         edge_index = self._expand_edges(self.edge_index_base, self.edge_inc, batch_size)
         target_nodes = sum(x[0] for x in shape_nodes)
-        edge_attr, edge_index, shapes_edge_attr, shapes_edge_idx = sort_edges_1hop(
+        edge_attr, edge_index, shapes_edge_attr, shapes_edge_idx = sort_edges_1hop_sharding(
             target_nodes,
             edge_attr,
             edge_index,
@@ -318,6 +323,7 @@ class GraphTransformerProcessor(GraphEdgeMixin, BaseProcessor):
         *args,
         **kwargs,
     ) -> Tensor:
+
         shape_nodes = change_channels_in_shape(shard_shapes, self.num_channels)
         edge_attr = self.trainable(self.edge_attr, batch_size)
 

@@ -1,9 +1,12 @@
-# (C) Copyright 2024 European Centre for Medium-Range Weather Forecasts.
+# (C) Copyright 2024 Anemoi contributors.
+#
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
+
 
 import logging
 
@@ -29,11 +32,14 @@ class TestTransformerProcessorBlock:
         num_heads=st.integers(min_value=1, max_value=10),
         activation=st.sampled_from(["ReLU", "GELU", "Tanh"]),
         window_size=st.integers(min_value=1, max_value=512),
+        dropout_p=st.floats(min_value=0.0, max_value=1.0),
     )
     @settings(max_examples=10)
-    def test_init(self, factor_attention_heads, hidden_dim, num_heads, activation, window_size):
+    def test_init(self, factor_attention_heads, hidden_dim, num_heads, activation, window_size, dropout_p):
         num_channels = num_heads * factor_attention_heads
-        block = TransformerProcessorBlock(num_channels, hidden_dim, num_heads, activation, window_size)
+        block = TransformerProcessorBlock(
+            num_channels, hidden_dim, num_heads, activation, window_size, dropout_p=dropout_p
+        )
         assert isinstance(block, TransformerProcessorBlock)
 
         assert isinstance(block.layer_norm1, nn.LayerNorm)
@@ -49,6 +55,7 @@ class TestTransformerProcessorBlock:
         window_size=st.integers(min_value=1, max_value=512),
         shapes=st.lists(st.integers(min_value=1, max_value=10), min_size=3, max_size=3),
         batch_size=st.integers(min_value=1, max_value=40),
+        dropout_p=st.floats(min_value=0.0, max_value=1.0),
     )
     @settings(max_examples=10)
     def test_forward_output(
@@ -60,9 +67,12 @@ class TestTransformerProcessorBlock:
         window_size,
         shapes,
         batch_size,
+        dropout_p,
     ):
         num_channels = num_heads * factor_attention_heads
-        block = TransformerProcessorBlock(num_channels, hidden_dim, num_heads, activation, window_size)
+        block = TransformerProcessorBlock(
+            num_channels, hidden_dim, num_heads, activation, window_size, dropout_p=dropout_p
+        )
 
         x = torch.randn((batch_size, num_channels))
 

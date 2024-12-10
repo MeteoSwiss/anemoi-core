@@ -1,11 +1,12 @@
-# (C) Copyright 2024 ECMWF.
+# (C) Copyright 2024 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
-#
+
 
 import logging
 from abc import ABC
@@ -73,6 +74,7 @@ class TransformerProcessorChunk(BaseProcessorChunk):
         num_heads: int = 16,
         mlp_hidden_ratio: int = 4,
         activation: str = "GELU",
+        dropout_p: float = 0.0,
     ) -> None:
         """Initialize TransformerProcessor.
 
@@ -88,6 +90,8 @@ class TransformerProcessorChunk(BaseProcessorChunk):
             ratio of mlp hidden dimension to embedding dimension, default 4
         activation : str, optional
             Activation function, by default "GELU"
+        dropout_p: float
+            Dropout probability used for multi-head self attention, default 0.0
         """
         super().__init__(num_channels=num_channels, num_layers=num_layers)
 
@@ -98,6 +102,7 @@ class TransformerProcessorChunk(BaseProcessorChunk):
             num_heads=num_heads,
             activation=activation,
             window_size=window_size,
+            dropout_p=dropout_p,
         )
 
     def forward(

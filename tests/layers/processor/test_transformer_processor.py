@@ -1,9 +1,12 @@
-# (C) Copyright 2024 European Centre for Medium-Range Weather Forecasts.
+# (C) Copyright 2024 Anemoi contributors.
+#
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+#
 # In applying this licence, ECMWF does not waive the privileges and immunities
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
+
 
 import pytest
 import torch
@@ -21,6 +24,7 @@ def transformer_processor_init():
     cpu_offload = False
     num_heads = 16
     mlp_hidden_ratio = 4
+    dropout_p = 0.1
     return (
         num_layers,
         window_size,
@@ -30,6 +34,7 @@ def transformer_processor_init():
         cpu_offload,
         num_heads,
         mlp_hidden_ratio,
+        dropout_p,
     )
 
 
@@ -44,6 +49,7 @@ def transformer_processor(transformer_processor_init):
         cpu_offload,
         num_heads,
         mlp_hidden_ratio,
+        dropout_p,
     ) = transformer_processor_init
     return TransformerProcessor(
         num_layers=num_layers,
@@ -54,6 +60,7 @@ def transformer_processor(transformer_processor_init):
         cpu_offload=cpu_offload,
         num_heads=num_heads,
         mlp_hidden_ratio=mlp_hidden_ratio,
+        dropout_p=dropout_p,
     )
 
 
@@ -67,6 +74,7 @@ def test_transformer_processor_init(transformer_processor, transformer_processor
         _cpu_offload,
         _num_heads,
         _mlp_hidden_ratio,
+        _dropout_p,
     ) = transformer_processor_init
     assert isinstance(transformer_processor, TransformerProcessor)
     assert transformer_processor.num_chunks == num_chunks
@@ -84,6 +92,7 @@ def test_transformer_processor_forward(transformer_processor, transformer_proces
         _cpu_offload,
         _num_heads,
         _mlp_hidden_ratio,
+        _dropout_p,
     ) = transformer_processor_init
     gridsize = 100
     batch_size = 1
