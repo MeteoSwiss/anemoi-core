@@ -48,7 +48,7 @@ class AnemoiModelInterface(torch.nn.Module):
     """
 
     def __init__(
-            self, *, config: DotDict, graph_data: HeteroData, statistics: dict, data_indices: dict, metadata: dict, lam_index: int=None, global_shape:int=None
+            self, *, config: DotDict, graph_data: HeteroData, statistics: dict, data_indices: dict, metadata: dict,
             ) -> None:
         
         super().__init__()
@@ -59,8 +59,6 @@ class AnemoiModelInterface(torch.nn.Module):
         self.statistics = statistics
         self.metadata = metadata
         self.data_indices = data_indices
-        self.lam_index=lam_index,
-        self.global_shape=global_shape,
         self._build_model()
 
     def _build_model(self) -> None:

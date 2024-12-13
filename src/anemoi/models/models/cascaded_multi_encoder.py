@@ -22,7 +22,6 @@ from torch.utils.checkpoint import checkpoint
 from torch_geometric.data import HeteroData
 
 from anemoi.models.distributed.shapes import get_shape_shards
-from anemoi.models.layers.graph import NamedNodesAttributes
 from anemoi.models.models import AnemoiModelEncProcDec
 
 LOGGER = logging.getLogger(__name__)
@@ -37,8 +36,6 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         model_config: DotDict,
         data_indices: dict,
         graph_data: HeteroData,
-        lam_index: int,
-        global_shape: int,
     ) -> None:
         """Initializes the graph neural network.
 
@@ -50,115 +47,74 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
             Data indices
         graph_data : HeteroData
             Graph definition
-        lam_index : int
-            Index that separates lam data and global data in the input 
-        global_shape: int
         """
-        super().__init__(model_config, data_indices, graph_data)
+        
+        self.target_space_dims = model_config.multi_encoder.target_space_dims 
+        self.encode_global = model_config.multi_encoder.encode_global 
 
-        # Model level encoder
-        self.lam_index = lam_index
-        self.global_shape = global_shape
+        # Get indices
+        # TODO: store this information in the graph attributes both edges and nodes
+        self.lam_indices = "" # get from graph data node attribute cutoutmask
+        self.global_shape = "" # get from graph data node attribute cutoutmask
+        self.lam_features = "" # get from graph data node attribute cutoutmask
+        self.global_features = "" # get from graph data node attribute cutoutmask
 
-        # Define first encoder
-        self.ml_encoder = nn.Sequential(nn.Linear(config.model.ml_features, config.model.pl_features), act_func = getattr(nn, config.model.activation))
+        # Define cascaded encoders
+        self.lam_encoders = [
+            nn.Sequential(nn.Linear(self.lam_features[i], self.target_space_dims), 
+                          act_func = getattr(nn, model_config.model.activation)) for i in range(len(self.lam_features))
+        ]
+        self.global_encoder = nn.Sequential(nn.Linear(self.global_features, self.target_space_dims), 
+                                            act_func = getattr(nn, model_config.model.activation))
 
-        #Define decoder
-        self.ml_decoder = nn.Sequential(nn.Linear(config.model.pl_features, config.model.ml_features), act_func = getattr(nn, config.model.activation))
+        # Define cascaded decoders
+        self.lam_decoder = [
+            nn.Sequential(nn.Linear(self.target_space_dims, self.lam_features[i]), 
+                          act_func = getattr(nn, model_config.model.activation)) for i in range(len(self.lam_features))
+        ]
+        self.global_decoder = nn.Sequential(nn.Linear(self.target_space_dims, self.global_features), 
+                                            act_func = getattr(nn, model_config.model.activation))
+        
+        # TODO: overwrite this:
+        input_dim = self.multi_step * self.num_input_channels + self.node_attributes.attr_ndims[self._graph_name_data]
+
+        super().__init__(model_config=model_config, data_indices=data_indices, graph_data=graph_data)
 
 
     def forward(self, x: Tensor, model_comm_group: Optional[ProcessGroup] = None) -> Tensor:
+        
         batch_size = x.shape[0]
         ensemble_size = x.shape[2]
-        grid_size = x.shape[3]
-        vars_size = x.shape[4]
+        
+        # Map lam vars to target vars
+        mapped_lams = []
+        prev_idx = 0
+        for i, lam_index in enumerate(self.lam_indices):
+            lam_data = x[:, :, :, prev_idx:lam_index, :self.lam_features[i]]
+            lam_data = einops.rearrange(lam_data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
+            mapped_lam_data = self.lam_encoders[i](lam_data)
+            mapped_lam_data = einops.rearrange(mapped_lam_data, 
+                                            " batch (time ensemble grid) vars -> batch time ensemble grid vars", 
+                                            batch=batch_size,
+                                            ensemble=ensemble_size
+                                            )
+            
+            # Append and increment idx
+            mapped_lams.append(mapped_lam_data)
+            prev_idx = lam_index
 
-        # Map ml to pl
-        lam_data = x[:,:,:,:self.lam_index, :]
-        lam_data = einops.rearrange(lam_data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
-        mapped_lam_data = self.ml_encoder(lam_data)
-        mapped_lam_data = einops.rearrange(mapped_lam_data, 
-                                           " batch (time ensemble grid) vars -> batch time ensemble grid vars", 
-                                           batch=batch_size,
-                                           ensemble=ensemble_size
-                                           )
-        # Remove padding on original data
-        x = x[:,:,:,:,:self.global_shape]
-        # Insert mapped features
-        x[:,:,:,:self.lam_index, :] = mapped_lam_data
+        # Map global vars to target vars
+        global_data = x[:, :, :, lam_index:, :self.global_features]
+        global_data = einops.rearrange(global_data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
+        mapped_global_data = self.global_encoder(global_data)
+        mapped_global_data = einops.rearrange(mapped_global_data, 
+                                        " batch (time ensemble grid) vars -> batch time ensemble grid vars", 
+                                        batch=batch_size,
+                                        ensemble=ensemble_size
+                                        )
+        
+        # stack all mapped vars on the grid axis
+        x = torch.concatenate(mapped_lams + [mapped_global_data], axis=3)
 
-        # add data positional info (lat/lon)
-        x_data_latent = torch.cat(
-            (
-                einops.rearrange(x, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"),
-                self.node_attributes(self._graph_name_data, batch_size=batch_size),
-            ),
-            dim=-1,  # feature dimension
-        )
-
-        x_hidden_latent = self.node_attributes(self._graph_name_hidden, batch_size=batch_size)
-
-        # get shard shapes
-        shard_shapes_data = get_shape_shards(x_data_latent, 0, model_comm_group)
-        shard_shapes_hidden = get_shape_shards(x_hidden_latent, 0, model_comm_group)
-
-        # Run encoder
-        x_data_latent, x_latent = self._run_mapper(
-            self.encoder,
-            (x_data_latent, x_hidden_latent),
-            batch_size=batch_size,
-            shard_shapes=(shard_shapes_data, shard_shapes_hidden),
-            model_comm_group=model_comm_group,
-        )
-
-        x_latent_proc = self.processor(
-            x_latent,
-            batch_size=batch_size,
-            shard_shapes=shard_shapes_hidden,
-            model_comm_group=model_comm_group,
-        )
-
-        # add skip connection (hidden -> hidden)
-        x_latent_proc = x_latent_proc + x_latent
-
-        # Run decoder
-        x_out = self._run_mapper(
-            self.decoder,
-            (x_latent_proc, x_data_latent),
-            batch_size=batch_size,
-            shard_shapes=(shard_shapes_hidden, shard_shapes_data),
-            model_comm_group=model_comm_group,
-        )
-
-        x_out = (
-            einops.rearrange(
-                x_out,
-                "(batch ensemble grid) vars -> batch ensemble grid vars",
-                batch=batch_size,
-                ensemble=ensemble_size,
-            )
-            .to(dtype=x.dtype)
-            .clone()
-        )
-
-        # Map pl back to ml
-        lam_data = x_out[:,:,:self.lam_index, :]
-        lam_data = einops.rearrange(lam_data, "batch ensemble grid vars -> batch (ensemble grid) vars")
-        mapped_lam_data = self.ml_decoder(lam_data)
-        mapped_lam_data = einops.rearrange(mapped_lam_data, 
-                                           "batch (ensemble grid) vars -> batch ensemble grid vars", 
-                                           batch=batch_size,
-                                           ensemble=ensemble_size
-                                           )
-        # Add padding on output global data
-        padded_out = torch.zeros([batch_size, ensemble_size, grid_size, vars_size], torch.float32).to(x_out.device)
-        padded_out[:,:,:,:,:self.global_shape] = x_out
-        # Insert mapped features
-        padded_out[:,:,:,:self.lam_index, :] = mapped_lam_data
-
-        # residual connection (just for the prognostic variables)
-        padded_out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
-        for bounding in self.boundings:
-            # bounding performed in the order specified in the config file
-            padded_out = bounding(padded_out)
-        return padded_out
+        # Normal iter after the first cascaded mapping encoder
+        super().forward(x, model_comm_group=model_comm_group)
