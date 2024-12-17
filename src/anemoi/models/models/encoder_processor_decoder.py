@@ -26,6 +26,7 @@ from anemoi.models.layers.graph import NamedNodesAttributes
 
 LOGGER = logging.getLogger(__name__)
 
+
 class AnemoiModelEncProcDec(nn.Module):
     """Message passing graph neural network."""
 

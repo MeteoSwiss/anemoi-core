@@ -48,9 +48,15 @@ class AnemoiModelInterface(torch.nn.Module):
     """
 
     def __init__(
-            self, *, config: DotDict, graph_data: HeteroData, statistics: dict, data_indices: dict, metadata: dict,
-            ) -> None:
-        
+        self,
+        *,
+        config: DotDict,
+        graph_data: HeteroData,
+        statistics: dict,
+        data_indices: dict,
+        metadata: dict,
+    ) -> None:
+
         super().__init__()
         self.config = config
         self.id = str(uuid.uuid4())
