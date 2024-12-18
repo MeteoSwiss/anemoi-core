@@ -28,7 +28,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
-    """Message passing graph neural network with double encoder, one for model levels and another for pressur levels"""
+    """Message passing graph neural network with double encoder, multiple encoders are used to map the features to a common dimention, then the actual ancoder is used."""
 
     def __init__(
         self,
@@ -53,11 +53,11 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         self.encode_global = model_config.multi_encoder.encode_global
 
         # Get indices
-        # TODO: store this information in the graph attributes both edges and nodes
-        self.lam_indices = ""  # get from graph data node attribute cutoutmask
-        self.global_shape = ""  # get from graph data node attribute cutoutmask
-        self.lam_features = ""  # get from graph data node attribute cutoutmask
-        self.global_features = ""  # get from graph data node attribute cutoutmask
+        assert hasattr(graph_data['data'], 'cutout')
+        self.lam_indices = getattr(graph_data['data'], 'cutout')
+        self.global_shape = not self.lam_indices
+        self.lam_features = graph_data['data'].x.numpy()[self.lam_indices].shape[1]
+        self.global_features = graph_data['data'].x.numpy()[self.global_shape].shape[1]
 
         # Define cascaded encoders
         self.lam_encoders = [
