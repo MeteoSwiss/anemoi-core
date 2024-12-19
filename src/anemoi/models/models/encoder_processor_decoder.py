@@ -166,7 +166,6 @@ class AnemoiModelEncProcDec(nn.Module):
         )
 
     def forward(self, x: Tensor, model_comm_group: Optional[ProcessGroup] = None) -> Tensor:
-        print(x.shape)
         batch_size = x.shape[0]
         ensemble_size = x.shape[2]
 
