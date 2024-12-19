@@ -14,14 +14,11 @@ from typing import Optional
 import einops
 import torch
 from anemoi.utils.config import DotDict
-from hydra.utils import instantiate
 from torch import Tensor
 from torch import nn
 from torch.distributed.distributed_c10d import ProcessGroup
-from torch.utils.checkpoint import checkpoint
 from torch_geometric.data import HeteroData
 
-from anemoi.models.distributed.shapes import get_shape_shards
 from anemoi.models.models import AnemoiModelEncProcDec
 
 LOGGER = logging.getLogger(__name__)
@@ -53,11 +50,11 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         self.encode_global = model_config.multi_encoder.encode_global
 
         # Get indices
-        assert hasattr(graph_data['data'], 'cutout')
-        self.lam_indices = getattr(graph_data['data'], 'cutout')
+        assert hasattr(graph_data["data"], "cutout")
+        self.lam_indices = getattr(graph_data["data"], "cutout")
         self.global_shape = not self.lam_indices
-        self.lam_features = graph_data['data'].x.numpy()[self.lam_indices].shape[1]
-        self.global_features = graph_data['data'].x.numpy()[self.global_shape].shape[1]
+        self.lam_features = graph_data["data"].x.numpy()[self.lam_indices].shape[1]
+        self.global_features = graph_data["data"].x.numpy()[self.global_shape].shape[1]
 
         # Define cascaded encoders
         self.lam_encoders = [
