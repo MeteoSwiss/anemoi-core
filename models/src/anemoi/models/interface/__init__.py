@@ -59,6 +59,7 @@ class AnemoiModelInterface(torch.nn.Module):
         metadata: dict,
         supporting_arrays: dict = None,
     ) -> None:
+
         super().__init__()
         self.config = config
         self.id = str(uuid.uuid4())
@@ -91,7 +92,6 @@ class AnemoiModelInterface(torch.nn.Module):
             _recursive_=False,  # Disables recursive instantiation by Hydra
         )
 
-        # Use the forward method of the model directly
         self.forward = self.model.forward
 
     def predict_step(self, batch: torch.Tensor) -> torch.Tensor:
