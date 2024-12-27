@@ -193,11 +193,61 @@ class SphericalAreaWeights(BaseNodeAttribute):
         super().__init__(norm, dtype)
         self.radius = radius
         self.centre = centre
-        self.fill_value = fill_value
+
+    # def get_raw_values(self, nodes: NodeStorage, **kwargs) -> np.ndarray:
+    #     """Compute the area associated to each node.
+
+    #     It uses Voronoi diagrams to compute the area of each node.
+
+    #     Parameters
+    #     ----------
+    #     nodes : NodeStorage
+    #         Nodes of the graph.
+    #     kwargs : dict
+    #         Additional keyword arguments.
+
+    #     Returns
+    #     -------
+    #     np.ndarray
+    #         Attributes.
+    #     """
+    #     latitudes, longitudes = nodes.x[:, 0], nodes.x[:, 1]
+    #     points = latlon_rad_to_cartesian((np.asarray(latitudes), np.asarray(longitudes)))
+    #     sv = SphericalVoronoi(points, self.radius, self.centre)
+    #     area_weights = sv.calculate_areas()
+
+    #     LOGGER.debug(
+    #         "There are %d of weights, which (unscaled) add up a total weight of %.2f.",
+    #         len(area_weights),
+    #         np.array(area_weights).sum(),
+    #     )
+
+    #     return area_weights
 
     def get_raw_values(self, nodes: NodeStorage, **kwargs) -> np.ndarray:
-        latitudes, longitudes = nodes.x[:, 0], nodes.x[:, 1]
-        points = latlon_rad_to_cartesian((np.asarray(latitudes), np.asarray(longitudes)))
+        """Compute the area associated to each node.
+        Uses Voronoi diagrams to compute the area of each node on the sphere.
+
+        Parameters
+        ----------
+        nodes : NodeStorage
+            Nodes of the graph. Assumes `nodes.x` is an array with latitude and longitude in radians.
+        kwargs : dict
+            Additional keyword arguments.
+
+        Returns
+        -------
+        np.ndarray
+            Array of area weights for each node.
+        """
+        # Convert latitudes and longitudes to ensure consistent types
+        latitudes = np.asarray(nodes.x[:, 0], dtype=np.float64)
+        longitudes = np.asarray(nodes.x[:, 1], dtype=np.float64)
+
+        # Convert to Cartesian coordinates
+        points = latlon_rad_to_cartesian((latitudes, longitudes))
+
+        # Instantiate SphericalVoronoi with consistent data types
         sv = SphericalVoronoi(points, self.radius, self.centre)
         mask = np.array([bool(i) for i in sv.regions])
         sv.regions = [region for region in sv.regions if region]
@@ -213,12 +263,21 @@ class SphericalAreaWeights(BaseNodeAttribute):
             )
         result = np.ones(points.shape[0]) * self.fill_value
         result[mask] = area_weights
+
+        # Calculate areas and handle possible dtype issues
+        try:
+            area_weights = sv.calculate_areas()
+        except ValueError as e:
+            LOGGER.error("Error in calculating Voronoi areas: %s", e)
+            raise
+
         LOGGER.debug(
-            "There are %d of weights, which (unscaled) add up a total weight of %.2f.",
-            len(result),
-            np.array(result).sum(),
+            "There are %d weights, which (unscaled) add up to a total weight of %.2f.",
+            len(area_weights),
+            np.array(area_weights).sum(),
         )
-        return result
+
+        return area_weights
 
 
 class BooleanBaseNodeAttribute(BaseNodeAttribute, ABC):
