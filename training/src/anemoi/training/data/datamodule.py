@@ -188,6 +188,8 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
             label=label,
             effective_bs=effective_bs,
         )
+        #self._check_resolution(data.resolution)
+        return data
 
     def _get_dataloader(self, ds: NativeGridDataset, stage: str) -> DataLoader:
         assert stage in {"training", "validation", "test"}
