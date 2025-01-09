@@ -63,12 +63,14 @@ class AnemoiModelEncProcDec(nn.Module):
 
         self.node_attributes = NamedNodesAttributes(model_config.model.trainable_parameters.hidden, self._graph_data)
 
-        input_dim = self.multi_step * self.num_input_channels + self.node_attributes.attr_ndims[self._graph_name_data]
+        self.input_dim = self.multi_step * self.num_input_channels + self.node_attributes.attr_ndims[self._graph_name_data]
+        print("Input dim: ", self.input_dim)
+        print(self.multi_step, self.num_input_channels , self.node_attributes.attr_ndims[self._graph_name_data])
 
         # Encoder data -> hidden
         self.encoder = instantiate(
             model_config.model.encoder,
-            in_channels_src=input_dim,
+            in_channels_src=self.input_dim,
             in_channels_dst=self.node_attributes.attr_ndims[self._graph_name_hidden],
             hidden_dim=self.num_channels,
             sub_graph=self._graph_data[(self._graph_name_data, "to", self._graph_name_hidden)],
@@ -89,7 +91,7 @@ class AnemoiModelEncProcDec(nn.Module):
         self.decoder = instantiate(
             model_config.model.decoder,
             in_channels_src=self.num_channels,
-            in_channels_dst=input_dim,
+            in_channels_dst=self.input_dim,
             hidden_dim=self.num_channels,
             out_channels_dst=self.num_output_channels,
             sub_graph=self._graph_data[(self._graph_name_hidden, "to", self._graph_name_data)],
@@ -169,6 +171,8 @@ class AnemoiModelEncProcDec(nn.Module):
         batch_size = x.shape[0]
         ensemble_size = x.shape[2]
 
+        print(x.shape)
+
         # add data positional info (lat/lon)
         x_data_latent = torch.cat(
             (
@@ -178,12 +182,15 @@ class AnemoiModelEncProcDec(nn.Module):
             dim=-1,  # feature dimension
         )
 
+        print(x_data_latent.shape)
+
         x_hidden_latent = self.node_attributes(self._graph_name_hidden, batch_size=batch_size)
 
         # get shard shapes
         shard_shapes_data = get_shape_shards(x_data_latent, 0, model_comm_group)
         shard_shapes_hidden = get_shape_shards(x_hidden_latent, 0, model_comm_group)
 
+        print("running Encoder")
         # Run encoder
         x_data_latent, x_latent = self._run_mapper(
             self.encoder,
@@ -192,17 +199,21 @@ class AnemoiModelEncProcDec(nn.Module):
             shard_shapes=(shard_shapes_data, shard_shapes_hidden),
             model_comm_group=model_comm_group,
         )
+        print("Done.")
 
+        print("running Procesor")
         x_latent_proc = self.processor(
             x_latent,
             batch_size=batch_size,
             shard_shapes=shard_shapes_hidden,
             model_comm_group=model_comm_group,
         )
+        print("Done.")
 
         # add skip connection (hidden -> hidden)
         x_latent_proc = x_latent_proc + x_latent
 
+        print("running Decoder")
         # Run decoder
         x_out = self._run_mapper(
             self.decoder,
@@ -211,6 +222,7 @@ class AnemoiModelEncProcDec(nn.Module):
             shard_shapes=(shard_shapes_hidden, shard_shapes_data),
             model_comm_group=model_comm_group,
         )
+        print("Done.")
 
         x_out = (
             einops.rearrange(
