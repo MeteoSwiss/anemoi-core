@@ -185,8 +185,6 @@ class AnemoiModelEncProcDec(nn.Module):
         batch_size = x.shape[0]
         ensemble_size = x.shape[2]
 
-        print(x.shape)
-
         # add data positional info (lat/lon)
         x_data_latent = torch.cat(
             (

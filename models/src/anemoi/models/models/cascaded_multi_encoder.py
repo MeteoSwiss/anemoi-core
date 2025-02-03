@@ -13,6 +13,7 @@ from typing import Optional
 
 import einops
 import torch
+import torch.nn.functional as F
 from anemoi.utils.config import DotDict
 from torch import Tensor
 from torch import nn
@@ -20,6 +21,7 @@ from torch.distributed.distributed_c10d import ProcessGroup
 import torch.distributed as dist
 from torch_geometric.data import HeteroData
 from torch.utils.checkpoint import checkpoint
+from anemoi.models.distributed.shapes import get_shape_shards
 
 from .encoder_processor_decoder import AnemoiModelEncProcDec
 
@@ -37,6 +39,15 @@ def get_shard(tensor: Tensor, dim: int, model_comm_group: Optional[ProcessGroup]
     # Index the shard corresponding to the current rank
     return shards[rank]
 
+def batch_standardize(x):
+    mean = x.mean(dim=0, keepdim=True)
+    var = x.var(dim=0, unbiased=False, keepdim=True)
+    x_norm = F.batch_norm(x, running_mean=None, running_var=None, training=True, momentum=0, eps=1e-5)
+    return x_norm, mean, var
+
+def batch_destandardize(x, mean, var):
+    return x * torch.sqrt(var + 1e-5) + mean
+
 class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
     """Message passing graph neural network with double encoder, multiple encoders are used to map the features to a common dimention, then the actual ancoder is used."""
 
@@ -45,6 +56,7 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         *,
         model_config: DotDict,
         data_indices: dict,
+        statistics: dict,
         graph_data: HeteroData,
     ) -> None:
         """Initializes the graph neural network.
@@ -62,7 +74,7 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         self.target_space_dims = model_config.model.multi_encoder.target_space_dims
         self.encode_global = model_config.model.multi_encoder.encode_global
 
-        super().__init__(model_config=model_config, data_indices=data_indices, graph_data=graph_data)
+        super().__init__(model_config=model_config, data_indices=data_indices, statistics=statistics, graph_data=graph_data)
   
         # Get indices
         assert hasattr(graph_data["data"], "cutout")
@@ -98,7 +110,6 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
                 nn.Linear(self.global_features, self.target_space_dims), 
                 getattr(nn, model_config.model.activation)() 
             )
-
             self.global_decoder = nn.Sequential(
                 nn.Linear(self.target_space_dims, self.global_features),
                 getattr(nn, model_config.model.activation)() 
@@ -162,6 +173,8 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
 
         print("Initial shape: ", x.shape)
         print(model_comm_group)
+        x, mean, var = batch_standardize(x)
+
 
         # Get shard
         global_indices = get_shard(self.global_indices, 0, model_comm_group)
@@ -186,8 +199,67 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         print("Shape before EncProcDec: ", x.shape)
 
         # Normal iter after the first cascaded mapping encoder
-        out = super().forward(x, model_comm_group=model_comm_group)
 
+        batch_size = x.shape[0]
+        ensemble_size = x.shape[2]
+
+        # add data positional info (lat/lon)
+        x_data_latent = torch.cat(
+            (
+                einops.rearrange(x, "batch time ensemble grid vars -> (batch ensemble grid) (time vars)"),
+                self.node_attributes(self._graph_name_data, batch_size=batch_size),
+            ),
+            dim=-1,  # feature dimension
+        )
+
+        print(x_data_latent.shape)
+
+        x_hidden_latent = self.node_attributes(self._graph_name_hidden, batch_size=batch_size)
+
+        # get shard shapes
+        shard_shapes_data = get_shape_shards(x_data_latent, 0, model_comm_group)
+        shard_shapes_hidden = get_shape_shards(x_hidden_latent, 0, model_comm_group)
+
+        print("running Encoder")
+        # Run encoder
+        x_data_latent, x_latent = self._run_mapper(
+            self.encoder,
+            (x_data_latent, x_hidden_latent),
+            batch_size=batch_size,
+            shard_shapes=(shard_shapes_data, shard_shapes_hidden),
+            model_comm_group=model_comm_group,
+        )
+        print("running Procesor")
+        x_latent_proc = self.processor(
+            x_latent,
+            batch_size=batch_size,
+            shard_shapes=shard_shapes_hidden,
+            model_comm_group=model_comm_group,
+        )
+
+        # add skip connection (hidden -> hidden)
+        x_latent_proc = x_latent_proc + x_latent
+
+        print("running Decoder")
+        # Run decoder
+        x_out = self._run_mapper(
+            self.decoder,
+            (x_latent_proc, x_data_latent),
+            batch_size=batch_size,
+            shard_shapes=(shard_shapes_hidden, shard_shapes_data),
+            model_comm_group=model_comm_group,
+        )
+
+        out = (
+            einops.rearrange(
+                x_out,
+                "(batch ensemble grid) vars -> batch ensemble grid vars",
+                batch=batch_size,
+                ensemble=ensemble_size,
+            )
+        )
+
+        # residual connection (just for the prognostic variables)
         print("Shape after EncProcDec: ", x.shape)
 
         # Decoded
@@ -209,5 +281,9 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         print("Decoded Global shape: ", mapped_global_out.shape)
 
         out = torch.concatenate(decoded_lams + [mapped_global_out], axis=3)
+
+        out = batch_destandardize(out, mean, var).to(dtype=x.dtype).clone()
+
+        out[..., self._internal_output_idx] += x[:, -1, :, :, self._internal_input_idx]
 
         return out
