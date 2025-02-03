@@ -226,6 +226,7 @@ class AnemoiModelEncProcDec(nn.Module):
         x_latent_proc = x_latent_proc + x_latent
 
         print("running Decoder")
+        print("running Decoder")
         # Run decoder
         x_out = self._run_mapper(
             self.decoder,

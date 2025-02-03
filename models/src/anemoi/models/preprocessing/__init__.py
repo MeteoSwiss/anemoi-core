@@ -177,9 +177,6 @@ class Processors(nn.Module):
         torch.Tensor
             Processed tensor
         """
-        print(x.shape)
-        print(self.processors)
-        print(torch.isnan(x).sum())
         for processor in self.processors.values():
             x = processor(x, in_place=in_place, inverse=self.inverse)
 

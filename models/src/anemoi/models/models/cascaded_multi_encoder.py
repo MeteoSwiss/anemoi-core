@@ -129,17 +129,21 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
     def _assert_matching_indices(self, data_indices: dict) -> None:
         pass
 
-    def cascade_encode(self, x, index, features, encoder):
+    def cascade_encode(self, x, index, features, encoder, model_comm_group):
         batch_size = x.shape[0]
         time_size = x.shape[1]
         ensemble_size = x.shape[2]
         
         data = x[:, :, :, index.flatten(), :features]
         data = einops.rearrange(data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
-        mapped_data = checkpoint(
+
+        mapped_data = self._run_mapper(
             encoder,
             data,
+            batch_size=batch_size,
+            model_comm_group=model_comm_group,
         )
+
         mapped_data = einops.rearrange(
             mapped_data,
             " batch (time ensemble grid) vars -> batch time ensemble grid vars",
@@ -149,17 +153,22 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         )
         return mapped_data
     
-    def cascade_decode(self, x, out, index, decoder):
+    def cascade_decode(self, x, out, index, decoder, model_comm_group):
         batch_size = x.shape[0]
         time_size = x.shape[1]
         ensemble_size = x.shape[2]
 
         data = out[:, :, index.flatten(), :]
         data = einops.rearrange(data, "batch time ensemble grid vars -> batch (time ensemble grid) vars")
-        mapped_data = checkpoint(
+
+        
+        mapped_data = self._run_mapper(
             decoder,
             data,
+            batch_size=batch_size,
+            model_comm_group=model_comm_group,
         )
+
         mapped_data = einops.rearrange(
             mapped_data,
             " batch (time ensemble grid) vars -> batch time ensemble grid vars",
@@ -171,8 +180,6 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
     
     def forward(self, x: Tensor, model_comm_group: Optional[ProcessGroup] = None) -> Tensor:
 
-        print("Initial shape: ", x.shape)
-        print(model_comm_group)
         x, mean, var = batch_standardize(x)
 
 
@@ -184,7 +191,7 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
         for i, lam_index in enumerate(self.lam_indices):
             # Get shard
             lam_index = get_shard(lam_index, 0, model_comm_group)
-            mapped_lam_data = self.cascade_encode(x, lam_index, self.lam_features[i], self.lam_encoders[i])
+            mapped_lam_data = self.cascade_encode(x, lam_index, self.lam_features[i], self.lam_encoders[i], model_comm_group)
             mapped_lams.append(mapped_lam_data)
         
         if self.encode_global:
@@ -211,8 +218,6 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
             ),
             dim=-1,  # feature dimension
         )
-
-        print(x_data_latent.shape)
 
         x_hidden_latent = self.node_attributes(self._graph_name_hidden, batch_size=batch_size)
 
@@ -268,7 +273,7 @@ class AnemoiModelCascadedEncProcDec(AnemoiModelEncProcDec):
             # Get shard
             lam_index = get_shard(lam_index, 0, model_comm_group)
 
-            mapped_lam_out = self.cascade_decode(x, out, lam_index, self.lam_decoders[i])
+            mapped_lam_out = self.cascade_decode(x, out, lam_index, self.lam_decoders[i], model_comm_group)
             decoded_lams.append(mapped_lam_out)
 
         if self.encode_global:
