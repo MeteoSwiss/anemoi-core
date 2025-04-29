@@ -92,7 +92,7 @@ class AnemoiTrainer:
         self._get_dry_run_id()
 
         # Check for dry run, i.e. run id without data
-        self._log_information()
+        # self._log_information()
 
     @cached_property
     def datamodule(self) -> AnemoiDatasetsDataModule:
@@ -405,7 +405,7 @@ class AnemoiTrainer:
 
     def _get_dry_run_id(self) -> None:
         """Check if the run ID is dry, e.g. without a checkpoint."""
-        if self.config.hardware.paths.checkpoints.is_dir():
+        if Path(self.config.hardware.paths.checkpoints).is_dir():
             self.dry_run_id = False
         else:
             LOGGER.info("Starting from a dry run ID.")
